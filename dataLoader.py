@@ -2,6 +2,9 @@ import sys
 import io
 import os
 import csv
+import random
+import torch
+import itertools
 
 PAD_token = 0  # Used for padding short sentences
 SOS_token = 1  # Start-of-sentence token
@@ -91,7 +94,7 @@ def processSenten(sentences):
 	for pair in sentences:
 		voc.addSentence(pair[0])
 		voc.addSentence(pair[1])
-	print("Counted words:", voc.num_words)
+	# print("Counted words:", voc.num_words)
 	return voc
 
 
@@ -118,21 +121,116 @@ def trimWords(voc, pairs, MIN_COUNT):
 	return keep_pairs
 
 
-if __name__ == '__main__':
-	questions,answers = load_conv()
-	convers = loadConversations(questions,answers)
-	# datafile = os.path.join('data', "formatted_lines.txt")
-	# with open(datafile, 'w', encoding='utf-8') as outputfile:
-	# 	writer = csv.writer(outputfile, delimiter=',', lineterminator='\n')
-	# 	for pair in convers:
-	# 		writer.writerow(pair)
 
-	pairs_filter = filterPairs(convers)
-	print("过滤掉过长和过短的句子后共有:",len(pairs_filter)) #190789
-	voc = processSenten(pairs_filter)
-	pairs = trimWords(voc, pairs_filter, MIN_COUNT)
-	print("修剪后的句子对长：",len(pairs)) #134352
+def maskMatrix(padList):
+	'''
+	用0,1进行mask pad_token位置为0  其余为1
+	'''
+	m = []
+	for i, seq in enumerate(padList):
+		# print(i,seq)
+		m.append([])
+		for token in seq:
+			if token == PAD_token:
+				m[i].append(0)
+			else:
+				m[i].append(1)
+	return m
+
+
+def zeroPadding(index_batch,maxlength):
+	padding_batch = []
+	for index in index_batch:
+		# print(index)
+		if len(index)<maxlength:
+			# index.append()
+			index.extend([PAD_token] * (maxlength-len(index)))
+		padding_batch.append(index)
+	# print("普通转置结果：",list(zip(*padding_batch)))
+	return list(zip(*padding_batch))  #转置
+
+
+def inputVar(voc,sentence):
+	'''
+	param-sentence:
+	      接收形式为[句1,句2,句3...]
+	'''
+	index_batch = []
+	for s in sentence:
+		index_onesenten = [voc.word2index[word] for word in s.strip().split(" ")] + [EOS_token]
+		index_batch.append(index_onesenten)
+	# print(index_batch)
+	lengths = torch.tensor([len(index) for index in index_batch])
+	maxlength = lengths[0]
+	# print(lengths)
+	# print("max_len:",maxlength)
+	padList = zeroPadding(index_batch,maxlength)
+	padVar = torch.LongTensor(padList)
+	# print(padList)
+	return padVar, lengths
+
+def outputVar(voc,sentence):
+	'''
+	回答的句子即输出句子 要进行mask
+	'''
+	index_batch = []
+	for s in sentence:
+		index_onesenten = [voc.word2index[word] for word in s.strip().split(" ")] + [EOS_token]
+		index_batch.append(index_onesenten)
+	max_target_len = max([len(index) for index in index_batch])
+	padList = zeroPadding(index_batch,max_target_len)
+	mask = maskMatrix(padList)
+	mask = torch.BoolTensor(mask)
+	padVar = torch.LongTensor(padList)
+	return padVar, mask, max_target_len
+
+
 	
+
+def getBatchData(voc,pair_batch):
+	'''
+	传入一批数据
+	'''
+	# print(pair_batch)
+	pair_batch.sort(key=lambda x:len(x[0].split(" ")),reverse=True)  #按照问句的长度排序？
+	# print(pair_batch)
+	input_batch = []
+	output_batch = []
+	for pair in pair_batch:
+		input_batch.append(pair[0])
+		output_batch.append(pair[1])
+	inp, lengths = inputVar(voc,input_batch)
+	output, mask, max_target_len = outputVar(voc,output_batch)
+	return inp, lengths, output, mask, max_target_len
+
+
+
+questions,answers = load_conv()
+convers = loadConversations(questions,answers)
+pairs_filter = filterPairs(convers)
+voc = processSenten(pairs_filter)
+pairs = trimWords(voc, pairs_filter, MIN_COUNT)
+# if __name__ == '__main__':
+# 	questions,answers = load_conv()
+# 	convers = loadConversations(questions,answers)
+# 	# datafile = os.path.join('data', "formatted_lines.txt")
+# 	# with open(datafile, 'w', encoding='utf-8') as outputfile:
+# 	# 	writer = csv.writer(outputfile, delimiter=',', lineterminator='\n')
+# 	# 	for pair in convers:
+# 	# 		writer.writerow(pair)
+
+# 	pairs_filter = filterPairs(convers)
+# 	# print("过滤掉过长和过短的句子后共有:",len(pairs_filter)) #190789
+# 	voc = processSenten(pairs_filter)
+# 	pairs = trimWords(voc, pairs_filter, MIN_COUNT)
+# 	# print("修剪后的句子对长：",len(pairs)) #134352
+# 	input_s, lengths, target_s, mask, max_target_len = getBatchData(voc,[random.choice(pairs) for _ in range(5)])
+# 	print("input_variable:", input_s)
+# 	print("lengths:", lengths)
+# 	print("target_variable:", target_s)
+# 	print("mask:", mask)
+
+
 
 
 
