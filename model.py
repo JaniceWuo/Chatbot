@@ -7,14 +7,22 @@ import random
 import torch.nn.functional as F
 import jieba
 import re
+import config
 # import warnings
 # warnings.filterwarnings('ignore')
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-PAD_token = 0  # Used for padding short sentences
-SOS_token = 1  # Start-of-sentence token
-EOS_token = 2  # End-of-sentence token
-MAX_LENGTH = 40
-MIN_COUNT = 5
+
+save_path = config.save_path
+hidden_size = config.hidden_size
+encoder_n_layers = 2
+decoder_n_layers = 2
+dropout = config.dropout
+batch_size = config.batch_size
+MAX_LENGTH = config.MAX_LENGTH
+learning_rate = config.learning_rate
+decoder_learning_ratio = 5.0
+iterations = config.iterations
+
 class EncoderRNN(nn.Module):
 	def __init__(self,hidden_size,embedding,n_layers,dropout):
 		super(EncoderRNN,self).__init__()
@@ -25,7 +33,7 @@ class EncoderRNN(nn.Module):
 			              dropout=dropout,bidirectional=True)
 
 	def forward(self,input_seq,input_lengths,hidden = None):
-		embedded = self.embedding(input_seq)
+		embedded = self.embedding(input_seq)  #所以其实是通过词的index去embedding里面找
 		packed = nn.utils.rnn.pack_padded_sequence(embedded, input_lengths,enforce_sorted = False)
 		outputs, hidden = self.gru(packed, hidden)
 		outputs, _ = nn.utils.rnn.pad_packed_sequence(outputs)
@@ -52,9 +60,8 @@ class Attention(nn.Module):
 
 class AttenDecoderRNN(nn.Module):
 	"""docstring for AttenDecoderRNN"""
-	def __init__(self, attn_model,embedding,hidden_size,output_size, n_layers=1, dropout=0.1):
+	def __init__(self,embedding,hidden_size,output_size, n_layers=1, dropout=0.1):
 		super(AttenDecoderRNN, self).__init__()
-		self.attn_model = attn_model
 		self.hidden_size = hidden_size
 		self.output_size = output_size
 		self.n_layers = n_layers
@@ -70,7 +77,10 @@ class AttenDecoderRNN(nn.Module):
 	def forward(self,input_step,last_hidden,encoder_output):
 		input_step = input_step.to(device)
 		embedded = self.embedding(input_step)
-		embedded = self.embedding_dropout(embedded)
+		embedded = self.embedding_dropout(embedded)、
+		
+
+		#这里获取embedding之后传给gru了
 
 		rnn_output,hidden = self.gru(embedded,last_hidden)
 
@@ -96,7 +106,7 @@ def maskNLLLoss(inp, target, mask):
 	return loss, nTotal.item()
 
 def train(input_variable, lengths, target_variable, mask, max_target_len, encoder, 
-	decoder, embedding,encoder_optimizer, decoder_optimizer, batch_size, clip, max_length=MAX_LENGTH):
+	decoder, embedding,encoder_optimizer, decoder_optimizer, batch_size, max_length=MAX_LENGTH):
 	encoder_optimizer.zero_grad()
 	decoder_optimizer.zero_grad()
 	input_variable = input_variable.to(device)
@@ -110,7 +120,7 @@ def train(input_variable, lengths, target_variable, mask, max_target_len, encode
 
 	encoder_outputs, encoder_hidden = encoder(input_variable, lengths)
 
-	decoder_input = torch.LongTensor([[SOS_token for _ in range(batch_size)]])
+	decoder_input = torch.LongTensor([[config.SOS_token for _ in range(batch_size)]])
 	decoder_hidden = encoder_hidden[:decoder.n_layers]
 	# use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
 
@@ -124,8 +134,8 @@ def train(input_variable, lengths, target_variable, mask, max_target_len, encode
 		print_losses.append(mask_loss.item() * nTotal)
 		n_totals += nTotal
 	loss.backward()
-	torch.nn.utils.clip_grad_norm_(encoder.parameters(), clip)
-	torch.nn.utils.clip_grad_norm_(decoder.parameters(), clip)
+	torch.nn.utils.clip_grad_norm_(encoder.parameters(), config.max_grad_norm)
+	torch.nn.utils.clip_grad_norm_(decoder.parameters(), config.max_grad_norm)
 
 	#梯度更新
 	encoder_optimizer.step()
@@ -134,28 +144,47 @@ def train(input_variable, lengths, target_variable, mask, max_target_len, encode
 	return sum(print_losses) / n_totals
 
 
-def trainIters(model_name, voc, pairs, encoder, decoder, encoder_optimizer, decoder_optimizer, embedding, encoder_n_layers, decoder_n_layers, save_dir, n_iteration, batch_size, print_every, save_every, clip):
-	training_batches = [getBatchData(voc, [random.choice(pairs) for _ in range(batch_size)]) for _ in range(n_iteration)]
+def trainIters(voc, pairs, embedding, encoder_n_layers, decoder_n_layers):
+	training_batches = [getBatchData(voc, [random.choice(pairs) for _ in range(batch_size)]) for _ in range(iterations)]
+	#training_batches为全部训练数据  每batch_size大小为一批
 	print('Initializing ...')
-	# start_iteration = 1
 	print_loss = 0
 	print("Training...")
-	for iteration in range(1, n_iteration + 1):
+
+	encoder = EncoderRNN(hidden_size, embedding, encoder_n_layers, dropout)
+	decoder = AttenDecoderRNN(embedding, hidden_size, voc.num_words, decoder_n_layers, dropout)
+
+	if config.use_pretrain:
+		checkpoint = torch.load(os.path.join(config.pretrain_model,'model20000.pth'))
+		encoder.load_state_dict(checkpoint['en'])
+		decoder.load_state_dict(checkpoint['de'])
+
+	# checkpoint = torch.load('save/2-2_500/model20000.pth')
+	encoder = encoder.to(device)
+	decoder = decoder.to(device)
+	encoder.train()
+	decoder.train()
+	encoder_optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
+	decoder_optimizer = optim.Adam(decoder.parameters(), lr=learning_rate * decoder_learning_ratio)
+
+	for iteration in range(20001, iterations + 1):
 		training_batch = training_batches[iteration - 1]
 		input_variable, lengths, target_variable, mask, max_target_len = training_batch
 		loss = train(input_variable, lengths, target_variable, mask, max_target_len, encoder,
-			decoder, embedding, encoder_optimizer, decoder_optimizer, batch_size, clip)
+			decoder, embedding, encoder_optimizer, decoder_optimizer, batch_size)
 		print_loss += loss
-		if iteration % print_every == 0:
-			print_loss_avg = print_loss / print_every
-			print("Iteration: {}; Percent complete: {:.1f}%; Average loss: {:.4f}".format(iteration, iteration / n_iteration * 100, print_loss_avg))
+		#输出每50个iteation的平均loss
+		if iteration % 500 == 0:
+			print_loss_avg = print_loss / 500
+			print("Iteration: {}; Average loss: {:.4f}".format(iteration, print_loss_avg))
 			print_loss = 0
-		if (iteration % save_every == 0):
-			directory = os.path.join(save_dir, model_name, '{}-{}_{}'.format(encoder_n_layers, decoder_n_layers, hidden_size))
-			if not os.path.exists(directory):
-				os.makedirs(directory)
+
+		if (iteration % 10000 == 0):
+			# directory = os.path.join(save_path, '{}-{}_{}'.format(encoder_n_layers, decoder_n_layers, hidden_size))
+			if not os.path.exists(save_path):
+				os.makedirs(save_path)
 			state = {'en': encoder.state_dict(),'de': decoder.state_dict(), 'iteration': iteration,'loss': loss}
-			dir = os.path.join(directory, 'model{}'.format(iteration))
+			dir = os.path.join(save_path, 'model{}.pth'.format(iteration))
 			torch.save(state,dir)
 			# torch.save({
 			# 	'iteration': iteration,
@@ -178,7 +207,7 @@ class GreedySearchDecoder(nn.Module):
 	def forward(self,input_seq,input_length,max_length):
 		encoder_outputs, encoder_hidden = self.encoder(input_seq, input_length)
 		decoder_hidden = encoder_hidden[:decoder.n_layers]
-		decoder_input = torch.ones(1, 1, device=device, dtype=torch.long) * SOS_token
+		decoder_input = torch.ones(1, 1, device=device, dtype=torch.long) * config.SOS_token
 
 		all_tokens = torch.zeros([0], device=device, dtype=torch.long)
 		all_scores = torch.zeros([0], device=device)
@@ -195,7 +224,7 @@ class GreedySearchDecoder(nn.Module):
 
 
 def evaluate(encoder, decoder, searcher, voc, sentence, max_length=MAX_LENGTH):
-	indexes_batch = [voc.word2index[word] for word in sentence] + [EOS_token]
+	indexes_batch = [voc.word2index[word] for word in sentence] + [config.EOS_token]
 	input_batch = [indexes_batch]
 	lengths = torch.tensor([len(indexes) for indexes in input_batch])
 	input_batch = torch.LongTensor([indexes_batch]).transpose(0, 1)
@@ -228,48 +257,28 @@ def evaluateInput(encoder, decoder, searcher, voc):
 
 		
 
-model_name = 'cb_model'
-attn_model = 'dot'
-save_dir = 'model'
-#attn_model = 'general'
-#attn_model = 'concat'
-hidden_size = 500
-encoder_n_layers = 2
-decoder_n_layers = 2
-dropout = 0.1
-batch_size = 64
-
-# checkpoint_iter = 4000
-
-print('Building encoder and decoder ...')
+# print('Building encoder and decoder ...')
 embedding = nn.Embedding(voc.num_words, hidden_size)
 encoder = EncoderRNN(hidden_size, embedding, encoder_n_layers, dropout)
-decoder = AttenDecoderRNN(attn_model, embedding, hidden_size, voc.num_words, decoder_n_layers, dropout)
+decoder = AttenDecoderRNN(embedding, hidden_size, voc.num_words, decoder_n_layers, dropout)
 encoder = encoder.to(device)
 decoder = decoder.to(device)
-print('Models built and ready to go!')
+# print('Models built and ready to go!')
 # print(voc.num_words)
 
 
-clip = 50.0
-learning_rate = 0.0001
-decoder_learning_ratio = 5.0
-n_iteration = 4000
-print_every = 10
-save_every = 500
 
-# encoder.train()
-# decoder.train()
-print('Building optimizers ...')
-encoder_optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
-decoder_optimizer = optim.Adam(decoder.parameters(), lr=learning_rate * decoder_learning_ratio)
-print("Starting Training!")
-# trainIters(model_name, voc, pairs, encoder, decoder, encoder_optimizer, decoder_optimizer,
-# 	embedding, encoder_n_layers, decoder_n_layers, save_dir, n_iteration, batch_size,
-# 	print_every, save_every, clip)
+def ModelTrain():
+	print("start train")
+	trainIters(voc, pairs,embedding, encoder_n_layers, decoder_n_layers)
 
-with torch.no_grad():
-	encoder.eval()
-	decoder.eval()
-	searcher = GreedySearchDecoder(encoder,decoder)
-	evaluateInput(encoder,decoder,searcher,voc)
+def ModelVal():
+	with torch.no_grad():
+		checkpoint = torch.load(os.path.join('save/','model100000.pth'),map_location=torch.device('cpu'))
+		encoder.load_state_dict(checkpoint['en'])
+		decoder.load_state_dict(checkpoint['de'])
+		encoder.eval()
+		decoder.eval()
+		searcher = GreedySearchDecoder(encoder,decoder)
+		evaluateInput(encoder,decoder,searcher,voc)
+

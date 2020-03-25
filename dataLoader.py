@@ -5,13 +5,16 @@ import csv
 import random
 import torch
 import itertools
+import config
+import numpy as np
+# PAD_token = 0  # Used for padding short sentences
+# SOS_token = 1  # Start-of-sentence token
+# EOS_token = 2  # End-of-sentence token
+# MAX_LENGTH = 40
+# MIN_COUNT = 5
 
-PAD_token = 0  # Used for padding short sentences
-SOS_token = 1  # Start-of-sentence token
-EOS_token = 2  # End-of-sentence token
-MAX_LENGTH = 40
-MIN_COUNT = 5
-
+MAX_LENGTH = config.MAX_LENGTH
+MIN_COUNT = config.MIN_COUNT
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer,encoding='gb18030')
 def load_conv():
@@ -52,7 +55,7 @@ class  Vocab(object):
 	def __init__(self):
 		super( Vocab, self).__init__()
 		self.word2index = {}
-		self.index2word = {PAD_token: "PAD", SOS_token: "SOS", EOS_token: "EOS"}
+		self.index2word = {config.PAD_token: "PAD", config.SOS_token: "SOS", config.EOS_token: "EOS"}
 		self.word2count = {}
 		self.num_words = 3
 		self.trimmed = False
@@ -80,7 +83,7 @@ class  Vocab(object):
 
 		self.word2index = {}
 		self.word2count = {}
-		self.index2word = {PAD_token: "PAD", SOS_token: "SOS", EOS_token: "EOS"}
+		self.index2word = {config.PAD_token: "PAD", config.SOS_token: "SOS", config.EOS_token: "EOS"}
 		self.num_words = 3 
 		for word in keep_words:
 			self.addWord(word)
@@ -131,7 +134,7 @@ def maskMatrix(padList):
 		# print(i,seq)
 		m.append([])
 		for token in seq:
-			if token == PAD_token:
+			if token == config.PAD_token:
 				m[i].append(0)
 			else:
 				m[i].append(1)
@@ -139,15 +142,20 @@ def maskMatrix(padList):
 
 
 def zeroPadding(index_batch,maxlength):
-	padding_batch = []
-	for index in index_batch:
-		# print(index)
-		if len(index)<maxlength:
-			# index.append()
-			index.extend([PAD_token] * (maxlength-len(index)))
-		padding_batch.append(index)
-	# print("普通转置结果：",list(zip(*padding_batch)))
+	# padding_batch = []
+	padding_batch = [index + [config.PAD_token] * (maxlength - len(index)) for index in index_batch]
+	# padding_batch = torch.LongTensor(padding_batch)
+	# # for index in index_batch:
+	# # 	# print(index)
+	# # 	if len(index) < maxlength:
+	# # 		# index.append()
+	# # 		add_ = [config.PAD_token] * (maxlength-len(index))
+	# # 		add_ = torch.tensor(add_)
+	# # 		index.extend(add_)
+	# # 	padding_batch.append(index)
+	# # print("普通转置结果：",list(zip(*padding_batch)))
 	return list(zip(*padding_batch))  #转置
+	# return list(itertools.zip_longest(*index_batch, fillvalue=config.PAD_token))
 
 
 def inputVar(voc,sentence):
@@ -157,7 +165,7 @@ def inputVar(voc,sentence):
 	'''
 	index_batch = []
 	for s in sentence:
-		index_onesenten = [voc.word2index[word] for word in s.strip().split(" ")] + [EOS_token]
+		index_onesenten = [voc.word2index[word] for word in s.strip().split(" ")] + [config.EOS_token]
 		index_batch.append(index_onesenten)
 	# print(index_batch)
 	lengths = torch.tensor([len(index) for index in index_batch])
@@ -166,7 +174,9 @@ def inputVar(voc,sentence):
 	# print("max_len:",maxlength)
 	padList = zeroPadding(index_batch,maxlength)
 	padVar = torch.LongTensor(padList)
-	# print(padList)
+	print("padlist",padList)
+	print(padVar)
+	# print(padList.shape)
 	return padVar, lengths
 
 def outputVar(voc,sentence):
@@ -175,7 +185,7 @@ def outputVar(voc,sentence):
 	'''
 	index_batch = []
 	for s in sentence:
-		index_onesenten = [voc.word2index[word] for word in s.strip().split(" ")] + [EOS_token]
+		index_onesenten = [voc.word2index[word] for word in s.strip().split(" ")] + [config.EOS_token]
 		index_batch.append(index_onesenten)
 	max_target_len = max([len(index) for index in index_batch])
 	padList = zeroPadding(index_batch,max_target_len)
@@ -200,6 +210,7 @@ def getBatchData(voc,pair_batch):
 		input_batch.append(pair[0])
 		output_batch.append(pair[1])
 	inp, lengths = inputVar(voc,input_batch)
+	#这里的inp应该是一批数据的index并且padding化了 形如[[5,2,45,0],[....],[...]]
 	output, mask, max_target_len = outputVar(voc,output_batch)
 	return inp, lengths, output, mask, max_target_len
 
@@ -210,6 +221,8 @@ convers = loadConversations(questions,answers)
 pairs_filter = filterPairs(convers)
 voc = processSenten(pairs_filter)
 pairs = trimWords(voc, pairs_filter, MIN_COUNT)
+
+
 # if __name__ == '__main__':
 # 	questions,answers = load_conv()
 # 	convers = loadConversations(questions,answers)
