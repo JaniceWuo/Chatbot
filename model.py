@@ -77,7 +77,7 @@ class AttenDecoderRNN(nn.Module):
 	def forward(self,input_step,last_hidden,encoder_output):
 		input_step = input_step.to(device)
 		embedded = self.embedding(input_step)
-		embedded = self.embedding_dropout(embedded)、
+		embedded = self.embedding_dropout(embedded)
 		
 
 		#这里获取embedding之后传给gru了
